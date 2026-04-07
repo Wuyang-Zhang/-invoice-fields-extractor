@@ -60,6 +60,7 @@ NUMBER_TRANSLATION = str.maketrans(
         "\u3002": ".",
         "\uFF0C": ",",
         "\uFF1A": ":",
+        "\u3001": ",",
         "\u00A5": "Y",
         "\uFFE5": "Y",
     }
@@ -90,8 +91,35 @@ class InvoiceFields:
     total_amount: str | None
 
 
+@dataclass
+class ImageExtractionResult:
+    source_image: str
+    invoices: list[InvoiceFields]
+    error: str | None = None
+
+
 def _ps_quote(text: str) -> str:
     return text.replace("'", "''")
+
+
+def _natural_sort_key(path: Path) -> list[int | str]:
+    parts = re.split(r"(\d+)", path.name.lower())
+    key: list[int | str] = []
+    for part in parts:
+        if part.isdigit():
+            key.append(int(part))
+        elif part:
+            key.append(part)
+    return key
+
+
+def _list_image_files(folder_path: str | Path) -> list[Path]:
+    folder = Path(folder_path)
+    image_suffixes = {".jpg", ".jpeg", ".png", ".bmp"}
+    return sorted(
+        [path for path in folder.iterdir() if path.is_file() and path.suffix.lower() in image_suffixes],
+        key=_natural_sort_key,
+    )
 
 
 def _run_windows_ocr(image_path: Path, lang: str) -> str:
@@ -149,14 +177,34 @@ def detect_invoice_regions(image: Image.Image) -> list[tuple[int, int, int, int]
     for start, end in row_segments:
         segment_mask = mask[start : end + 1]
         left_density = float(segment_mask[:, : max(1, segment_mask.shape[1] // 5)].mean())
-        row_meta.append({"start": start, "end": end, "left_density": left_density})
+        row_meta.append(
+            {
+                "start": start,
+                "end": end,
+                "left_density": left_density,
+                "density": float(segment_mask.mean()),
+                "height": end - start + 1,
+            }
+        )
 
-    groups = _merge_segments([(item["start"], item["end"]) for item in row_meta], gap=220)
+    # Short, sparse segments around the gap between two invoices can bridge them
+    # into one large box. Drop these noise segments before row grouping.
+    filtered_row_meta = [
+        item
+        for item in row_meta
+        if not (item["density"] < 0.13 and item["height"] < 60)
+    ]
+
+    groups = _merge_segments(
+        [(item["start"], item["end"]) for item in filtered_row_meta], gap=220
+    )
     boxes: list[tuple[int, int, int, int]] = []
 
     for group_start, group_end in groups:
         group_rows = [
-            item for item in row_meta if item["start"] >= group_start and item["end"] <= group_end
+            item
+            for item in filtered_row_meta
+            if item["start"] >= group_start and item["end"] <= group_end
         ]
         useful_rows = [item for item in group_rows if item["left_density"] > 0.10]
         if not useful_rows:
@@ -249,19 +297,44 @@ def _extract_issue_date(texts: list[str]) -> str | None:
 
 
 def _extract_max_amount(texts: list[str]) -> str | None:
-    values: list[float] = []
-    for text in texts:
-        compact = re.sub(r"\s+", "", _normalize_number_text(text))
-        for match in re.findall(r"\d+\.\d{1,2}", compact):
-            try:
-                values.append(float(match))
-            except ValueError:
-                continue
-
+    values = _extract_amount_values(texts)
     if not values:
         return None
 
     return f"{max(values):.2f}"
+
+
+def _extract_amount_values(texts: list[str]) -> list[float]:
+    values: list[float] = []
+    for text in texts:
+        compact = re.sub(r"\s+", "", _normalize_number_text(text))
+        for match in re.findall(r"\d+[\.,]\d{1,2}", compact):
+            try:
+                values.append(float(match.replace(",", ".")))
+            except ValueError:
+                continue
+
+    return values
+
+
+def _derive_tax_amount(total_amount: str | None, texts: list[str]) -> str | None:
+    if total_amount is None:
+        return None
+
+    values = sorted(set(_extract_amount_values(texts)))
+    if not values:
+        return None
+
+    total_value = float(total_amount)
+    lower_values = [value for value in values if value < total_value]
+    if not lower_values:
+        return None
+
+    subtotal = max(lower_values)
+    tax_value = round(total_value - subtotal, 2)
+    if tax_value <= 0:
+        return None
+    return f"{tax_value:.2f}"
 
 
 def _ocr_crop_texts(crop: Image.Image, tmp_dir: Path, stem: str) -> list[str]:
@@ -285,34 +358,69 @@ def extract_invoice_fields(image_path: str | Path) -> list[InvoiceFields]:
             header_rel = (0.62, 0.00, 0.995, 0.17) if index == 1 else (0.62, 0.00, 0.995, 0.18)
             total_rel = (0.55, 0.73, 0.995, 0.94)
             tax_rel = (0.82, 0.60, 0.995, 0.82)
+            amount_rel = (0.50, 0.68, 0.995, 0.94)
 
             header_crop = _preprocess_for_ocr(_crop_relative(image, box, header_rel))
             total_crop = _preprocess_for_ocr(_crop_relative(image, box, total_rel))
             tax_crop = _preprocess_for_ocr(_crop_relative(image, box, tax_rel))
+            amount_crop = _preprocess_for_ocr(_crop_relative(image, box, amount_rel))
 
             header_texts = _ocr_crop_texts(header_crop, tmp_dir, f"header_{index}")
             total_texts = _ocr_crop_texts(total_crop, tmp_dir, f"total_{index}")
             tax_texts = _ocr_crop_texts(tax_crop, tmp_dir, f"tax_{index}")
+            amount_texts = _ocr_crop_texts(amount_crop, tmp_dir, f"amount_{index}")
+
+            total_amount = _extract_max_amount(total_texts)
+            if total_amount is None:
+                total_amount = _extract_max_amount(amount_texts)
+
+            tax_amount = _extract_max_amount(tax_texts)
+            if tax_amount is None:
+                tax_amount = _derive_tax_amount(total_amount, amount_texts)
 
             results.append(
                 InvoiceFields(
                     invoice_number=_extract_invoice_number(header_texts),
                     issue_date=_extract_issue_date(header_texts),
-                    tax_amount=_extract_max_amount(tax_texts),
-                    total_amount=_extract_max_amount(total_texts),
+                    tax_amount=tax_amount,
+                    total_amount=total_amount,
                 )
             )
 
     return results
 
 
+def extract_invoice_fields_from_directory(folder_path: str | Path) -> list[ImageExtractionResult]:
+    results: list[ImageExtractionResult] = []
+    for image_path in _list_image_files(folder_path):
+        try:
+            invoices = extract_invoice_fields(image_path)
+            results.append(
+                ImageExtractionResult(source_image=image_path.name, invoices=invoices)
+            )
+        except Exception as exc:
+            results.append(
+                ImageExtractionResult(source_image=image_path.name, invoices=[], error=str(exc))
+            )
+    return results
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Extract invoice fields from an image like 1.jpg.")
-    parser.add_argument("image", nargs="?", default="1.jpg", help="Path to the source image.")
+    parser.add_argument(
+        "input_path",
+        nargs="?",
+        default="1.jpg",
+        help="Path to an image or a folder that contains images.",
+    )
     args = parser.parse_args()
 
-    invoices = extract_invoice_fields(args.image)
-    print(json.dumps([asdict(item) for item in invoices], ensure_ascii=False, indent=2))
+    input_path = Path(args.input_path)
+    if input_path.is_dir():
+        payload = [asdict(item) for item in extract_invoice_fields_from_directory(input_path)]
+    else:
+        payload = [asdict(item) for item in extract_invoice_fields(input_path)]
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

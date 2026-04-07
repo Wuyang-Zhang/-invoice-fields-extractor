@@ -12,6 +12,11 @@
 - 命令行脚本：`11.py`
 - 双击图形界面：`Launch_GUI.bat`
 
+并且两种方式都支持：
+
+- 单张图片识别
+- 整个文件夹批量识别
+
 ## 运行环境
 
 需要满足以下条件：
@@ -53,6 +58,14 @@ python 11.py 1.jpg
 python 11.py
 ```
 
+如果你要批量处理一个文件夹，把图片按 `1.jpg`、`2.jpg`、`3.jpg` 这种序号放进去，然后直接把文件夹路径传给脚本：
+
+```powershell
+python 11.py C:\Users\ZHIQIN ZHANG\Desktop\liuyi\images
+```
+
+脚本会自动按文件名中的数字顺序处理图片，例如：`1.jpg`、`2.jpg`、`10.jpg`。
+
 ## 方式二：双击运行
 
 如果你不想敲命令，可以直接双击：
@@ -63,16 +76,18 @@ Launch_GUI.bat
 
 双击后会打开一个窗口，操作流程如下：
 
-1. 点击 `Select Image`
-2. 选择待识别图片
+1. 如果识别单张，点击 `Select Image`
+2. 如果批量识别，点击 `Select Folder`
 3. 点击 `Run Extraction`
 4. 在窗口下方查看 JSON 结果
 
 如果当前目录下已经有 `1.jpg`，你也可以不选文件，直接点击 `Run Extraction`。
 
+如果选择的是文件夹，程序会把该文件夹下的 `.jpg`、`.jpeg`、`.png`、`.bmp` 图片全部提取出来。
+
 ## 运行结果示例
 
-输出结果是 JSON，例如：
+单张图片输出结果是 JSON，例如：
 
 ```json
 [
@@ -87,6 +102,31 @@ Launch_GUI.bat
     "issue_date": "2026-02-11",
     "tax_amount": "71.72",
     "total_amount": "1267.00"
+  }
+]
+```
+
+批量识别时输出格式如下：
+
+```json
+[
+  {
+    "source_image": "1.jpg",
+    "invoices": [
+      {
+        "invoice_number": "26117000000002012307",
+        "issue_date": "2026-02-11",
+        "tax_amount": "127.01",
+        "total_amount": "1104.00"
+      },
+      {
+        "invoice_number": "26112000000564374836",
+        "issue_date": "2026-02-11",
+        "tax_amount": "71.72",
+        "total_amount": "1267.00"
+      }
+    ],
+    "error": null
   }
 ]
 ```
@@ -138,6 +178,16 @@ python 11.py 1.jpg
 
 这个脚本依赖 Windows 自带 OCR。如果系统相关组件不可用，脚本就无法正常识别。
 
+### 5. 批量处理时顺序不对
+
+建议把文件名按数字命名，例如：
+
+- `1.jpg`
+- `2.jpg`
+- `3.jpg`
+
+脚本会按数字顺序排序，而不是简单的字符串顺序。
+
 ## 你现在可以直接这样用
 
 命令行：
@@ -145,6 +195,13 @@ python 11.py 1.jpg
 ```powershell
 cd C:\Users\ZHIQIN ZHANG\Desktop\liuyi
 python 11.py 1.jpg
+```
+
+批量命令行：
+
+```powershell
+cd C:\Users\ZHIQIN ZHANG\Desktop\liuyi
+python 11.py .
 ```
 
 双击方式：

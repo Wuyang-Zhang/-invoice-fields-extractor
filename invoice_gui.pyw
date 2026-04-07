@@ -30,6 +30,8 @@ class InvoiceApp:
 
         self.extractor = load_extractor()
         self.current_image = None
+        self.current_folder = None
+        self.selection_mode = 'image'
 
         container = tk.Frame(root, padx=16, pady=16)
         container.pack(fill='both', expand=True)
@@ -39,7 +41,7 @@ class InvoiceApp:
 
         subtitle = tk.Label(
             container,
-            text='Select an image like 1.jpg to extract invoice number, issue date, tax amount, and total amount.',
+            text='Select one image or a folder of images to extract invoice number, issue date, tax amount, and total amount.',
             font=('Segoe UI', 10),
             justify='left',
             wraplength=720,
@@ -55,6 +57,9 @@ class InvoiceApp:
 
         open_button = tk.Button(controls, text='Select Image', command=self.select_image, width=14)
         open_button.pack(side='left', padx=(12, 8))
+
+        folder_button = tk.Button(controls, text='Select Folder', command=self.select_folder, width=14)
+        folder_button.pack(side='left', padx=(0, 8))
 
         run_button = tk.Button(controls, text='Run Extraction', command=self.run_extraction, width=14)
         run_button.pack(side='left')
@@ -83,25 +88,60 @@ class InvoiceApp:
         if not file_path:
             return
         self.current_image = Path(file_path)
+        self.current_folder = None
+        self.selection_mode = 'image'
         self.path_var.set(str(self.current_image))
         self.status_var.set('Image selected. Click Run Extraction.')
 
+    def select_folder(self) -> None:
+        folder_path = filedialog.askdirectory(
+            title='Select image folder',
+            initialdir=str(ROOT),
+        )
+        if not folder_path:
+            return
+        self.current_folder = Path(folder_path)
+        self.current_image = None
+        self.selection_mode = 'folder'
+        self.path_var.set(str(self.current_folder))
+        self.status_var.set('Folder selected. Click Run Extraction.')
+
     def run_extraction(self) -> None:
-        if self.current_image is None:
-            default_image = ROOT / '1.jpg'
-            if default_image.exists():
-                self.current_image = default_image
-                self.path_var.set(str(self.current_image))
-            else:
-                messagebox.showwarning('Missing image', 'Please select an image first.')
+        if self.selection_mode == 'folder':
+            if self.current_folder is None:
+                messagebox.showwarning('Missing folder', 'Please select a folder first.')
                 return
+        else:
+            if self.current_image is None:
+                default_image = ROOT / '1.jpg'
+                if default_image.exists():
+                    self.current_image = default_image
+                    self.path_var.set(str(self.current_image))
+                else:
+                    messagebox.showwarning('Missing image', 'Please select an image first.')
+                    return
 
         self.root.config(cursor='watch')
         self.root.update_idletasks()
         self.status_var.set('Running OCR...')
 
         try:
-            results = self.extractor.extract_invoice_fields(self.current_image)
+            if self.selection_mode == 'folder':
+                results = self.extractor.extract_invoice_fields_from_directory(self.current_folder)
+                payload = []
+                for item in results:
+                    payload.append(
+                        {
+                            'source_image': item.source_image,
+                            'invoices': [invoice.__dict__ for invoice in item.invoices],
+                            'error': item.error,
+                        }
+                    )
+                self.status_var.set(f'Completed. Processed {len(payload)} image(s).')
+            else:
+                results = self.extractor.extract_invoice_fields(self.current_image)
+                payload = [item.__dict__ for item in results]
+                self.status_var.set(f'Completed. Detected {len(payload)} invoice(s).')
         except Exception as exc:
             self.status_var.set('Extraction failed')
             messagebox.showerror('Extraction failed', str(exc))
@@ -109,9 +149,7 @@ class InvoiceApp:
         finally:
             self.root.config(cursor='')
 
-        payload = [item.__dict__ for item in results]
         self.set_output(json.dumps(payload, ensure_ascii=False, indent=2))
-        self.status_var.set(f'Completed. Detected {len(payload)} invoice(s).')
 
 
 if __name__ == '__main__':
