@@ -1,0 +1,35 @@
+  # Python
+  __pycache__/
+  *.py[cod]
+  *.pyo
+  *.pyd
+  *.so
+  .python-version
+
+  # Virtual environments
+  .venv/
+  venv/
+  env/
+
+  # Build
+  build/
+  dist/
+  *.egg-info/
+
+  # IDE
+  .vscode/
+  .idea/
+
+  # OS
+  .DS_Store
+  Thumbs.db
+
+  # Local outputs
+  *.json
+  temp/
+  tmp/
+  output/
+
+  # Optional: ignore local test images
+  # *.jpg
+  # *.png
